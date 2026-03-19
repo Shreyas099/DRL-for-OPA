@@ -1,0 +1,10 @@
+yfinance
+pandas
+numpy
+gymnasium
+stable-baselines3[extra]
+PyPortfolioOpt
+pyfolio-reloaded
+matplotlib
+seaborn
+scipy
