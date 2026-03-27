@@ -67,6 +67,19 @@ def train_pipeline():
         # ---------------------------------------------------------------- #
         # Launch all seeds simultaneously as independent subprocesses       #
         # ---------------------------------------------------------------- #
+        # Limit each subprocess to 1 OMP/MKL thread to prevent oversubscription.
+        # With 5 seeds × 11 processes (1 main + 10 SubprocVecEnv workers) = 55
+        # processes, uncapped PyTorch OMP threads (default ~8-10 each) would
+        # spawn 500+ threads on 96 cores, killing performance.
+        worker_env = os.environ.copy()
+        worker_env.update({
+            "OMP_NUM_THREADS":     "1",
+            "MKL_NUM_THREADS":     "1",
+            "OPENBLAS_NUM_THREADS":"1",
+            "VECLIB_MAXIMUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        })
+
         procs = []
         for seed in range(config.NUM_SEEDS):
             cmd = [
@@ -78,7 +91,7 @@ def train_pipeline():
                 cmd += ["--seed_model", str(best_agent_path)]
 
             # Inherit stdout/stderr so SB3 progress bars print to terminal
-            proc = subprocess.Popen(cmd)
+            proc = subprocess.Popen(cmd, env=worker_env)
             procs.append((seed, proc))
             print(f"  [W{window} S{seed}] started (pid={proc.pid})")
 
