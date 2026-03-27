@@ -10,10 +10,10 @@ import config
 from src.env.portfolio_env import PortfolioEnv
 
 
-def make_env(df, seed: int, rank: int):
+def make_env(df, seed: int, rank: int, prices_df=None):
     """Factory function for a single vectorised sub-environment."""
     def _init():
-        env = PortfolioEnv(df)
+        env = PortfolioEnv(df, prices_df=prices_df)
         env.reset(seed=seed + rank)
         return env
     set_random_seed(seed)
@@ -35,15 +35,14 @@ class PPOAgent:
        (Section 5.2). This tightens the initial action distribution.
     """
 
-    def __init__(self, df, seed: int = 42):
+    def __init__(self, df, seed: int = 42, prices_df=None):
         self.df     = df
         self.seed   = seed
         self.n_envs = config.N_ENVS   # 10
 
-        # FIX: SubprocVecEnv — true multiprocessing (paper Section 5.2)
-        #      DummyVecEnv ran all envs sequentially; no parallelism benefit.
+        # SubprocVecEnv — true multiprocessing (paper Section 5.2)
         self.envs = SubprocVecEnv(
-            [make_env(self.df, self.seed, i) for i in range(self.n_envs)],
+            [make_env(self.df, self.seed, i, prices_df=prices_df) for i in range(self.n_envs)],
             start_method="fork",       # "fork" is fastest on Linux/macOS
         )
 
@@ -99,41 +98,5 @@ class PPOAgent:
 
     def predict(self, state, deterministic: bool = True):
         action, _ = self.model.predict(state, deterministic=deterministic)
-        return action            gae_lambda=config.PPO_PARAMS["gae_lambda"],
-            clip_range=config.PPO_PARAMS["clip_range"],
-            policy_kwargs=config.PPO_PARAMS["policy_kwargs"],
-            verbose=1,
-            seed=self.seed
-        )
-
-    def _linear_schedule(self, initial_value):
-        """
-        Linear learning rate schedule.
-        Paper: Linear decay from 3e-4 to 1e-5
-        """
-        def func(progress_remaining: float) -> float:
-            """
-            Progress will decrease from 1 (beginning) to 0
-            """
-            final_value = 1e-5
-            return progress_remaining * (initial_value - final_value) + final_value
-
-        return func
-
-    def train(self, total_timesteps=7_500_000, seed_model_path=None):
-        if seed_model_path and os.path.exists(seed_model_path):
-            print(f"Loading seed policy from {seed_model_path}")
-            self.model.set_parameters(seed_model_path)
-
-        print(f"Training PPO agent with seed {self.seed} for {total_timesteps} timesteps...")
-        self.model.learn(total_timesteps=total_timesteps)
-
-    def save(self, path):
-        self.model.save(path)
-
-    def load(self, path):
-        self.model = PPO.load(path, env=self.envs)
-
-    def predict(self, state):
-        action, _states = self.model.predict(state, deterministic=True)
         return action
+

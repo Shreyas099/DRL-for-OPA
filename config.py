@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import torch
 
 # Paths
 BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -21,7 +22,7 @@ END_DATE = "2021-12-31"
 
 # Environment parameters
 LOOKBACK_WINDOW = 60
-INITIAL_BALANCE = 100_000       # FIX: paper uses $100,000 (was $1,000,000)
+INITIAL_BALANCE = 100_000
 TRANSACTION_COST = 0.00
 
 # PPO Hyperparameters — exactly as in Table 1 of the paper
@@ -36,7 +37,8 @@ PPO_PARAMS = {
     "clip_range": 0.25,
     "policy_kwargs": dict(
         net_arch=[64, 64],
-        log_std_init=-1             # FIX: paper specifies log_std_init = -1 (was missing)
+        activation_fn=torch.nn.Tanh,  # paper Table 1: tanh activation
+        log_std_init=-1,              # paper Table 1: log_std_init = -1
     )
 }
 

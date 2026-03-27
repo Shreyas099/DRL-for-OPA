@@ -16,46 +16,24 @@ from src.utils.metrics import calculate_metrics, print_metrics
 os.makedirs(config.RESULTS_DIR, exist_ok=True)
 
 
-def _best_model_for_window(window: int, val_df: pd.DataFrame) -> str | None:
+def _run_drl_episode(test_df: pd.DataFrame, model_path, seed: int, prices_df=None):
     """
-    Identify the best seed model for a given window by re-evaluating saved
-    models on the validation set and returning the path to the best one.
+    Run a single DRL agent on the test data and return a list of daily returns.
     """
-    val_env     = PortfolioEnv(val_df)
-    best_sharpe = -np.inf
-    best_path   = None
+    test_env = PortfolioEnv(test_df, prices_df=prices_df)
+    agent = PPOAgent(df=test_df, seed=seed, prices_df=prices_df)
+    agent.load(model_path)
 
-    for seed in range(config.NUM_SEEDS):
-        model_path = config.MODELS_DIR / f"ppo_window_{window}_seed_{seed}.zip"
-        if not model_path.exists():
-            continue
+    state, _ = test_env.reset()
+    done = truncated = False
+    daily_returns = []
 
-        agent = PPOAgent(df=val_df, seed=seed * 42)
-        try:
-            agent.load(model_path)
-        except Exception as e:
-            print(f"    Could not load {model_path}: {e}")
-            continue
+    while not (done or truncated):
+        action = agent.predict(state, deterministic=True)
+        state, _, done, truncated, info = test_env.step(action)
+        daily_returns.append(info["return"])
 
-        state, _ = val_env.reset()
-        done = truncated = False
-        rets = []
-        while not (done or truncated):
-            action = agent.predict(state, deterministic=True)
-            state, _, done, truncated, info = val_env.step(action)
-            rets.append(info["return"])
-
-        rets = np.array(rets)
-        sharpe = (
-            np.sqrt(252) * rets.mean() / (rets.std() + 1e-8)
-            if len(rets) > 1
-            else 0.0
-        )
-        if sharpe > best_sharpe:
-            best_sharpe = sharpe
-            best_path   = model_path
-
-    return best_path, best_sharpe
+    return daily_returns
 
 
 def evaluate_pipeline():
@@ -74,15 +52,17 @@ def evaluate_pipeline():
 
     df        = pd.read_csv(features_path, index_col=0, parse_dates=True)
 
-    # FIX: MVO now uses actual prices, not prices reconstructed from log returns
+    # MVO uses actual prices, not prices reconstructed from log returns
     prices_df = pd.read_csv(prices_path,   index_col=0, parse_dates=True)
 
     start_year = int(config.START_DATE[:4])
     mvo_agent  = MVOAgent()
 
-    drl_returns  = []
-    mvo_returns  = []
-    test_dates   = []
+    # Paper Section 6: "For DRL, we average the performance across the
+    # 5 agents (each trained on a different seed) for each year"
+    drl_returns_avg = []   # averaged across seeds
+    mvo_returns     = []
+    test_dates      = []
 
     # ------------------------------------------------------------------ #
     # Walk-forward evaluation                                              #
@@ -93,7 +73,6 @@ def evaluate_pipeline():
         test_start = f"{start_year + window + config.WINDOW_TRAIN_YEARS + config.WINDOW_VAL_YEARS}-01-01"
         test_end   = f"{start_year + window + config.WINDOW_TRAIN_YEARS + config.WINDOW_VAL_YEARS}-12-31"
 
-        val_df  = df.loc[val_start:val_end]
         test_df = df.loc[test_start:test_end]
 
         print(f"\nWindow {window + 1} — test: {test_start} → {test_end}")
@@ -102,27 +81,30 @@ def evaluate_pipeline():
             print("  No test data, skipping.")
             continue
 
-        # --- DRL ---
-        best_path, best_sharpe = _best_model_for_window(window, val_df)
-        if best_path:
-            print(f"  Best model: {best_path.name}  (val Sharpe={best_sharpe:.4f})")
-        else:
+        # --- DRL: run ALL seeds and average (paper Section 6) ---
+        seed_returns = []
+        for seed in range(config.NUM_SEEDS):
+            model_path = config.MODELS_DIR / f"ppo_window_{window}_seed_{seed}.zip"
+            if not model_path.exists():
+                print(f"  WARNING: {model_path.name} not found, skipping seed.")
+                continue
+
+            print(f"  Running seed {seed} ({model_path.name}) ...")
+            rets = _run_drl_episode(test_df, model_path, seed=seed * 42, prices_df=prices_df)
+            seed_returns.append(rets)
+
+        if len(seed_returns) == 0:
             print("  WARNING: no saved models found for this window.")
+            continue
 
-        test_env = PortfolioEnv(test_df)
-        agent    = PPOAgent(df=test_df, seed=42)
-        if best_path:
-            agent.load(best_path)
-
-        state, _ = test_env.reset()
-        done = truncated = False
-        while not (done or truncated):
-            action = agent.predict(state, deterministic=True)
-            state, _, done, truncated, info = test_env.step(action)
-            drl_returns.append(info["return"])
+        # Average daily returns across all seeds for this window
+        min_seed_len = min(len(r) for r in seed_returns)
+        avg_rets = np.mean(
+            [r[:min_seed_len] for r in seed_returns], axis=0
+        ).tolist()
+        drl_returns_avg.extend(avg_rets)
 
         # --- MVO ---
-        # Use real prices for the test dates (FIX)
         test_prices_dates = prices_df.index.intersection(test_df.index)
         mvo_daily, _ = mvo_agent.simulate(prices_df, test_prices_dates)
         mvo_returns.extend(mvo_daily)
@@ -132,12 +114,11 @@ def evaluate_pipeline():
     # ------------------------------------------------------------------ #
     # Align series and compute metrics                                     #
     # ------------------------------------------------------------------ #
-    # DRL produces T-1 returns (env advances one step before returning)
-    min_len = min(len(drl_returns), len(mvo_returns), len(test_dates) - 1)
+    min_len = min(len(drl_returns_avg), len(mvo_returns), len(test_dates) - 1)
 
     common_dates = test_dates[1 : min_len + 1]
-    drl_series   = pd.Series(drl_returns[:min_len],  index=common_dates)
-    mvo_series   = pd.Series(mvo_returns[1:min_len+1], index=common_dates)
+    drl_series   = pd.Series(drl_returns_avg[:min_len], index=common_dates)
+    mvo_series   = pd.Series(mvo_returns[1:min_len+1],  index=common_dates)
 
     print("\n" + "=" * 55)
     print("Out-of-sample results  [2012 – 2021]")
