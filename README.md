@@ -76,7 +76,7 @@ python src/data/fetch_data.py
 
 ### 2. Train the PPO agents
 
-Runs the 10-window walk-forward pipeline. Each window trains 5 seeds for 7.5M timesteps using 10 parallel environments via `SubprocVecEnv`. The best-performing agent (by validation Sharpe) is saved and used to warm-start the next window.
+Runs the 10-window walk-forward pipeline. Each window trains 5 seeds for 7.5M timesteps using 10 parallel environments via `SubprocVecEnv`. The best-performing agent (by mean episode validation reward) is saved and used to warm-start the next window.
 
 ```bash
 python src/train.py
@@ -157,7 +157,7 @@ Window 2:  Train 2007–2011  |  Val 2012  |  Test 2013
 Window 10: Train 2015–2019  |  Val 2020  |  Test 2021
 ```
 
-5 seeds are trained per window; the best by validation Sharpe ratio is selected for testing and used to warm-start the next window.
+5 seeds are trained per window; the best by mean episode validation reward (DSR) is selected for testing and used to warm-start the next window.
 
 ### MVO baseline (Section 5.3)
 
