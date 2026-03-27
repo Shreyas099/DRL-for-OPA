@@ -8,9 +8,9 @@ import seaborn as sns
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from stable_baselines3 import PPO
 from src.env.portfolio_env import PortfolioEnv
 from src.models.mvo_agent import MVOAgent
-from src.models.ppo_agent import PPOAgent
 from src.utils.metrics import calculate_metrics, print_metrics
 
 os.makedirs(config.RESULTS_DIR, exist_ok=True)
@@ -19,20 +19,26 @@ os.makedirs(config.RESULTS_DIR, exist_ok=True)
 def _run_drl_episode(test_df: pd.DataFrame, model_path, seed: int, prices_df=None):
     """
     Run a single DRL agent on the test data and return a list of daily returns.
+
+    Uses a lightweight single-env loader for inference — no need to spin up 10
+    SubprocVecEnv worker processes just to run one deterministic episode.
     """
+    from stable_baselines3.common.vec_env import DummyVecEnv
     test_env = PortfolioEnv(test_df, prices_df=prices_df)
-    agent = PPOAgent(df=test_df, seed=seed, prices_df=prices_df)
-    agent.load(model_path)
+    # Load model with a single DummyVecEnv — avoids spawning 10 subprocess workers
+    vec_env = DummyVecEnv([lambda: PortfolioEnv(test_df, prices_df=prices_df)])
+    model = PPO.load(str(model_path), env=vec_env)
 
     state, _ = test_env.reset()
     done = truncated = False
     daily_returns = []
 
     while not (done or truncated):
-        action = agent.predict(state, deterministic=True)
+        action, _ = model.predict(state, deterministic=True)
         state, _, done, truncated, info = test_env.step(action)
         daily_returns.append(info["return"])
 
+    vec_env.close()
     return daily_returns
 
 
