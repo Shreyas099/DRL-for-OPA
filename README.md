@@ -12,7 +12,7 @@ This repository trains a Proximal Policy Optimization (PPO) agent to manage a co
 ## Project structure
 
 ```text
-DRL-for-OPA-fixed/
+DRL-for-OPA/
 ├── config.py                   # Centralised hyperparameters & paths
 ├── requirements.txt
 └── src/
@@ -20,12 +20,13 @@ DRL-for-OPA-fixed/
     │   └── fetch_data.py       # Downloads ETF/VIX/SPX data; saves prices.csv
     │                           # and processed_features.csv
     ├── env/
-    │   └── portfolio_env.py    # Gym environment — correct 720-dim state,
-    │                           # exact DSR reward, η = 1/252
+    │   └── portfolio_env.py    # Gym environment — 720-dim state,
+    │                           # DSR reward, η = 1/252
     ├── models/
     │   ├── ppo_agent.py        # SB3 PPO wrapper — SubprocVecEnv, log_std_init=-1
-    │   └── mvo_agent.py        # PyPortfolioOpt MVO — uses real prices
-    ├── train.py                # Walk-forward pipeline (10 windows × 5 seeds)
+    │   └── mvo_agent.py        # PyPortfolioOpt MVO — real prices + whole-shares
+    ├── train.py                # Parallel orchestrator (10 windows × 5 seeds)
+    ├── train_worker.py         # Single-seed worker called by train.py
     ├── evaluate.py             # Out-of-sample backtest & plots
     └── utils/
         └── metrics.py          # Sharpe, Sortino, Calmar, Max Drawdown
@@ -37,7 +38,8 @@ data/
 ├── prices.csv                  # Raw adjusted closes (MVO input)
 └── processed_features.csv      # Daily log returns + 3 vol indicators (RL input)
 saved_models/
-└── ppo_window_{w}_seed_{s}.zip # Best model per window/seed
+├── ppo_window_{w}_seed_{s}.zip # Trained model per window/seed
+└── result_window_{w}_seed_{s}.json  # Validation rewards (read by orchestrator)
 results/
 ├── evaluation_metrics.csv
 ├── cumulative_returns.png
@@ -76,13 +78,24 @@ python src/data/fetch_data.py
 
 ### 2. Train the PPO agents
 
-Runs the 10-window walk-forward pipeline. Each window trains 5 seeds for 7.5M timesteps using 10 parallel environments via `SubprocVecEnv`. The best-performing agent (by mean episode validation reward) is saved and used to warm-start the next window.
+Runs the 10-window walk-forward pipeline. For each window, **all 5 seeds are trained simultaneously** as independent subprocesses (`train_worker.py`), each using 10 parallel environments via `SubprocVecEnv`. The best-performing agent (by mean episode validation reward, per §5.2) is selected and used to warm-start the next window.
 
 ```bash
 python src/train.py
 ```
 
-> Full training = 375M timesteps total. At ~2,800 steps/sec on a modern CPU this takes roughly **37–40 hours**. To run a quick sanity check, reduce `timesteps` in `train.py` to `500_000` and `NUM_SEEDS` to `1` in `config.py`.
+To keep training running after closing your SSH session:
+
+```bash
+nohup python src/train.py > training.log 2>&1 &
+tail -f training.log          # watch progress live
+```
+
+> **Estimated runtime:**
+> - Sequential (1 seed at a time): ~54 hours on a Xeon server
+> - **Parallel (5 seeds at once): ~11–13 hours** — requires ≥55 CPU cores
+>
+> For a quick sanity check, set `NUM_SEEDS = 1` in `config.py` (~11 hrs) and confirm the pipeline runs end-to-end before the full run.
 
 ### 3. Evaluate and compare
 
