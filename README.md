@@ -9,22 +9,6 @@ This repository trains a Proximal Policy Optimization (PPO) agent to manage a co
 
 ---
 
-## Bug fixes vs the original code
-
-The original repository contained several deviations from the paper that have been corrected here:
-
-| # | File | What was wrong | What was fixed |
-|---|------|---------------|----------------|
-| 1 | `portfolio_env.py` | State was a 27-dim vector (one cumulative 60-day return per asset). Paper (Section 4.2) specifies a full `(n+1) × T` matrix of daily return sequences. | State is now the correct `12 × 60 = 720`-dim flattened matrix — full 60-day daily return history per asset. |
-| 2 | `portfolio_env.py` | Reward used a simplified formula `(Rt − A) / σ`, missing the `ΔB` term entirely. | Implements the exact Differential Sharpe Ratio from Moody et al. (1998): `D_t = [B_{t-1}·ΔA − 0.5·A_{t-1}·ΔB] / (B_{t-1} − A_{t-1}²)^{3/2}` (Section 4.3). |
-| 3 | `portfolio_env.py` | `eta = 0.99` was set as a decay factor. Paper specifies `η ≈ 1/252` as the update rate. | Fixed to `eta = 1/252 ≈ 0.00397`. |
-| 4 | `fetch_data.py` | Saved 4 volatility indicators (added standalone `vol60`). Paper (Section 5.1) uses exactly 3: `vol20`, `vol20/vol60`, `VIX`. | Now saves only the 3 correct indicators: `vol20`, `vol_ratio`, `vix`. |
-| 5 | `ppo_agent.py` | Used `DummyVecEnv` — runs all 10 environments serially in one process. | Switched to `SubprocVecEnv` for true multiprocessing as specified in the paper (Section 5.2). |
-| 6 | `config.py` | `log_std_init = -1` was missing from `policy_kwargs`. | Added as specified in Section 5.2: tightens the initial action distribution. |
-| 7 | `config.py` + `evaluate.py` | Initial balance was `$1,000,000` (10× too high); MVO used prices reconstructed from cumulative log returns (drifts from reality over 15 years). | Balance corrected to `$100,000`; `fetch_data.py` now saves a separate `prices.csv` of raw adjusted closes used directly by the MVO agent. |
-
----
-
 ## Project structure
 
 ```text
