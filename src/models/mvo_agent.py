@@ -85,14 +85,19 @@ class MVOAgent:
         self,
         prices_df: pd.DataFrame,
         test_dates: pd.DatetimeIndex,
+        initial_balance: float = config.INITIAL_BALANCE,
     ):
         """
         Simulate MVO portfolio over test_dates using real prices.
 
+        Implements whole-share rebalancing (paper Section 5.4):
+        "ensuring only whole number of shares are purchased."
+
         Parameters
         ----------
-        prices_df  : full prices DataFrame (all dates, indexed by date)
-        test_dates : the dates to trade (out-of-sample test period)
+        prices_df       : full prices DataFrame (all dates, indexed by date)
+        test_dates      : the dates to trade (out-of-sample test period)
+        initial_balance : starting portfolio value ($100,000 per paper §5.4)
 
         Returns
         -------
@@ -101,6 +106,7 @@ class MVOAgent:
         """
         daily_returns = []
         all_weights   = []
+        portfolio_value = initial_balance
 
         for date in test_dates:
             # Select the lookback window of prices ending just before `date`
@@ -111,61 +117,32 @@ class MVOAgent:
                 hist = prices_df.iloc[date_loc - self.lookback_window : date_loc]
                 w    = self.get_weights(hist)
 
-            all_weights.append(w)
+            # Whole-share rebalancing (paper §5.4)
+            curr_prices = prices_df.iloc[date_loc][self.assets].values.astype(np.float64)
+            if np.any(np.isnan(curr_prices)) or np.any(curr_prices <= 0):
+                w_reb = w   # fallback
+            else:
+                allocated = w * portfolio_value
+                shares = np.floor(allocated / curr_prices)
+                actual_values = shares * curr_prices
+                cash = portfolio_value - np.sum(actual_values)
+                if portfolio_value > 0:
+                    w_reb = actual_values / portfolio_value
+                    # cash weight is implicit (1 - sum(w_reb))
+                else:
+                    w_reb = w
+            all_weights.append(w_reb)
 
             # Compute realised return on `date`
             if date_loc == 0:
                 daily_returns.append(0.0)
                 continue
 
-            prev_prices  = prices_df.iloc[date_loc - 1][self.assets].values
-            curr_prices  = prices_df.iloc[date_loc][self.assets].values
+            prev_prices  = prices_df.iloc[date_loc - 1][self.assets].values.astype(np.float64)
             asset_rets   = (curr_prices - prev_prices) / (prev_prices + 1e-10)
-            daily_returns.append(float(np.dot(w, asset_rets)))
+            port_ret     = float(np.dot(w_reb, asset_rets))
+            daily_returns.append(port_ret)
+            portfolio_value *= (1.0 + port_ret)
 
-        return daily_returns, all_weights        # Optimize for Maximum Sharpe Ratio
-        # Set bounds to (0, 1) for long-only portfolio
-        try:
-            ef = EfficientFrontier(mu, S, weight_bounds=(0, 1))
-            raw_weights = ef.max_sharpe(risk_free_rate=0.0) # Assume risk-free rate is 0 as in DRL
-            cleaned_weights = ef.clean_weights()
+        return daily_returns, all_weights
 
-            # Convert dict back to array
-            weights = np.array([cleaned_weights.get(asset, 0.0) for asset in self.assets])
-            return weights
-
-        except Exception as e:
-            # If optimization fails (e.g. all returns negative), return equal weights
-            # print(f"Optimization failed: {e}")
-            return np.ones(len(self.assets)) / len(self.assets)
-
-    def simulate(self, prices_df, start_idx, end_idx):
-        """
-        Simulate MVO performance over a period.
-        prices_df: DataFrame of all asset prices (unadjusted daily closes or adj closes)
-        """
-        portfolio_value = config.INITIAL_BALANCE
-        values = [portfolio_value]
-
-        # Weights: (N assets) + Cash. MVO will not hold cash unless forced, so cash=0.
-        all_weights = []
-
-        for t in range(start_idx, end_idx):
-            # historical prices from (t - lookback) to t-1
-            # Ensure we have enough history. If t < lookback, we can't do it, but start_idx should be >= lookback
-            hist_prices = prices_df.iloc[t-self.lookback_window:t][self.assets]
-
-            # Get weights for today
-            w = self.get_weights(hist_prices)
-            all_weights.append(w)
-
-            # Calculate today's return
-            # The return at time t is (Price_t - Price_{t-1}) / Price_{t-1}
-            daily_returns = prices_df.iloc[t][self.assets] / prices_df.iloc[t-1][self.assets] - 1
-            daily_returns = daily_returns.values
-
-            portfolio_return = np.sum(w * daily_returns)
-            portfolio_value *= (1 + portfolio_return)
-            values.append(portfolio_value)
-
-        return values, all_weights
