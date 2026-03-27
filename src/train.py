@@ -102,6 +102,7 @@ def train_pipeline():
                 best_val_reward        = val_reward
                 best_window_agent_path = model_path
 
+            agent.envs.close()   # shut down SubprocVecEnv worker processes
             del agent
             gc.collect()
 
