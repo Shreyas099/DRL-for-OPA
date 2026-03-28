@@ -4,7 +4,6 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -16,30 +15,44 @@ from src.utils.metrics import calculate_metrics, print_metrics
 os.makedirs(config.RESULTS_DIR, exist_ok=True)
 
 
-def _run_drl_episode(test_df: pd.DataFrame, model_path, seed: int, prices_df=None):
+def _run_drl_episode(test_df: pd.DataFrame, model_path, prices_df=None):
     """
-    Run a single DRL agent on the test data and return a list of daily returns.
+    Run a single DRL agent on the test data.
 
-    Uses a lightweight single-env loader for inference — no need to spin up 10
-    SubprocVecEnv worker processes just to run one deterministic episode.
+    Returns a pd.Series of daily returns indexed by the TRADED dates.
+
+    The env starts at current_step = lookback_window (60), so the first 60
+    rows of test_df are consumed as history and never traded. The returned
+    series is therefore indexed by test_df.index[60:] — the actual trading
+    dates — not by test_df.index[0:].
+
+    BUG FIXED: the original code returned a plain list and later used a
+    global min_len to align dates, which silently discarded the last ~60
+    days of every test year (600 trading days total = ~2.4 years missing
+    from a 10-year backtest).
     """
     from stable_baselines3.common.vec_env import DummyVecEnv
+
     test_env = PortfolioEnv(test_df, prices_df=prices_df)
-    # Load model with a single DummyVecEnv — avoids spawning 10 subprocess workers
-    vec_env = DummyVecEnv([lambda: PortfolioEnv(test_df, prices_df=prices_df)])
-    model = PPO.load(str(model_path), env=vec_env)
+    vec_env  = DummyVecEnv([lambda: PortfolioEnv(test_df, prices_df=prices_df)])
+    model    = PPO.load(str(model_path), env=vec_env)
 
     state, _ = test_env.reset()
     done = truncated = False
     daily_returns = []
+    traded_steps  = []   # track which df rows were actually traded
 
     while not (done or truncated):
         action, _ = model.predict(state, deterministic=True)
         state, _, done, truncated, info = test_env.step(action)
         daily_returns.append(info["return"])
+        traded_steps.append(test_env.current_step)   # index into test_df
 
     vec_env.close()
-    return daily_returns
+
+    # Map stepped indices back to dates
+    traded_dates = test_df.index[traded_steps]
+    return pd.Series(daily_returns, index=traded_dates)
 
 
 def evaluate_pipeline():
@@ -57,25 +70,19 @@ def evaluate_pipeline():
         return
 
     df        = pd.read_csv(features_path, index_col=0, parse_dates=True)
-
-    # MVO uses actual prices, not prices reconstructed from log returns
     prices_df = pd.read_csv(prices_path,   index_col=0, parse_dates=True)
 
     start_year = int(config.START_DATE[:4])
     mvo_agent  = MVOAgent()
 
-    # Paper Section 6: "For DRL, we average the performance across the
-    # 5 agents (each trained on a different seed) for each year"
-    drl_returns_avg = []   # averaged across seeds
-    mvo_returns     = []
-    test_dates      = []
+    # Accumulate per-window Series — concatenated at the end
+    drl_pieces = []
+    mvo_pieces = []
 
     # ------------------------------------------------------------------ #
     # Walk-forward evaluation                                              #
     # ------------------------------------------------------------------ #
     for window in range(config.NUM_WINDOWS):
-        val_start  = f"{start_year + window + config.WINDOW_TRAIN_YEARS}-01-01"
-        val_end    = f"{start_year + window + config.WINDOW_TRAIN_YEARS}-12-31"
         test_start = f"{start_year + window + config.WINDOW_TRAIN_YEARS + config.WINDOW_VAL_YEARS}-01-01"
         test_end   = f"{start_year + window + config.WINDOW_TRAIN_YEARS + config.WINDOW_VAL_YEARS}-12-31"
 
@@ -88,7 +95,7 @@ def evaluate_pipeline():
             continue
 
         # --- DRL: run ALL seeds and average (paper Section 6) ---
-        seed_returns = []
+        seed_series = []
         for seed in range(config.NUM_SEEDS):
             model_path = config.MODELS_DIR / f"ppo_window_{window}_seed_{seed}.zip"
             if not model_path.exists():
@@ -96,36 +103,43 @@ def evaluate_pipeline():
                 continue
 
             print(f"  Running seed {seed} ({model_path.name}) ...")
-            rets = _run_drl_episode(test_df, model_path, seed=seed * 42, prices_df=prices_df)
-            seed_returns.append(rets)
+            s = _run_drl_episode(test_df, model_path, prices_df=prices_df)
+            seed_series.append(s)
 
-        if len(seed_returns) == 0:
+        if not seed_series:
             print("  WARNING: no saved models found for this window.")
             continue
 
-        # Average daily returns across all seeds for this window
-        min_seed_len = min(len(r) for r in seed_returns)
-        avg_rets = np.mean(
-            [r[:min_seed_len] for r in seed_returns], axis=0
-        ).tolist()
-        drl_returns_avg.extend(avg_rets)
+        # Align seeds on their common traded dates and average
+        common_idx  = seed_series[0].index
+        for s in seed_series[1:]:
+            common_idx = common_idx.intersection(s.index)
 
-        # --- MVO ---
-        test_prices_dates = prices_df.index.intersection(test_df.index)
-        mvo_daily, _ = mvo_agent.simulate(prices_df, test_prices_dates)
-        mvo_returns.extend(mvo_daily)
+        avg_returns = pd.Series(
+            np.mean([s.loc[common_idx].values for s in seed_series], axis=0),
+            index=common_idx,
+        )
+        drl_pieces.append(avg_returns)
 
-        test_dates.extend(test_df.index.tolist())
+        # --- MVO: simulate on the SAME traded dates ---
+        # Use the full prices_df so MVO can look back before test_start
+        mvo_daily, _ = mvo_agent.simulate(prices_df, common_idx)
+        mvo_pieces.append(pd.Series(mvo_daily, index=common_idx))
 
     # ------------------------------------------------------------------ #
-    # Align series and compute metrics                                     #
+    # Concatenate across all windows                                       #
     # ------------------------------------------------------------------ #
-    min_len = min(len(drl_returns_avg), len(mvo_returns), len(test_dates) - 1)
+    drl_series = pd.concat(drl_pieces).sort_index()
+    mvo_series = pd.concat(mvo_pieces).sort_index()
 
-    common_dates = test_dates[1 : min_len + 1]
-    drl_series   = pd.Series(drl_returns_avg[:min_len], index=common_dates)
-    mvo_series   = pd.Series(mvo_returns[1:min_len+1],  index=common_dates)
+    print(f"\nDRL series: {len(drl_series)} trading days  "
+          f"({drl_series.index[0].date()} → {drl_series.index[-1].date()})")
+    print(f"MVO series: {len(mvo_series)} trading days  "
+          f"({mvo_series.index[0].date()} → {mvo_series.index[-1].date()})")
 
+    # ------------------------------------------------------------------ #
+    # Metrics                                                              #
+    # ------------------------------------------------------------------ #
     print("\n" + "=" * 55)
     print("Out-of-sample results  [2012 – 2021]")
     print("=" * 55)
@@ -163,8 +177,8 @@ def _plot_annual(drl: pd.Series, mvo: pd.Series):
     drl_annual = drl.resample("YE").apply(lambda x: (1 + x).prod() - 1)
     mvo_annual = mvo.resample("YE").apply(lambda x: (1 + x).prod() - 1)
 
-    annual_df         = pd.DataFrame({"DRL": drl_annual, "MVO": mvo_annual})
-    annual_df.index   = annual_df.index.year
+    annual_df       = pd.DataFrame({"DRL": drl_annual, "MVO": mvo_annual})
+    annual_df.index = annual_df.index.year
 
     fig, ax = plt.subplots(figsize=(12, 5))
     annual_df.plot.bar(ax=ax)
