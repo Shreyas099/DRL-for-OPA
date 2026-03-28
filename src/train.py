@@ -116,8 +116,12 @@ def train_pipeline():
             if not result_path.exists():
                 print(f"  [W{window} S{seed}] WARNING: no result file — skipping")
                 continue
-            with open(result_path) as f:
-                r = json.load(f)
+            try:
+                with open(result_path) as f:
+                    r = json.load(f)
+            except (json.JSONDecodeError, ValueError) as exc:
+                print(f"  [W{window} S{seed}] WARNING: corrupt result file ({exc}) — skipping")
+                continue
             print(f"    Seed {seed}: reward={r['val_reward']:+.6f}  return={r['val_return']:+.2%}")
             if r["val_reward"] > best_val_reward:
                 best_val_reward        = r["val_reward"]

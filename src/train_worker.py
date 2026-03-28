@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -112,7 +113,7 @@ def main():
     agent.envs.close()
 
     # ------------------------------------------------------------------ #
-    # Write result JSON for orchestrator                                   #
+    # Write result JSON for orchestrator (atomic write avoids partial reads)#
     # ------------------------------------------------------------------ #
     result = {
         "window":      window,
@@ -122,8 +123,18 @@ def main():
         "model_path":  str(model_path),
     }
     result_path = config.MODELS_DIR / f"result_window_{window}_seed_{seed_idx}.json"
-    with open(result_path, "w") as f:
-        json.dump(result, f, indent=2)
+    # Write to a temp file in the same directory, then atomically rename.
+    # This guarantees the orchestrator never reads a partially-written file.
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=config.MODELS_DIR, prefix=f".tmp_result_w{window}_s{seed_idx}_", suffix=".json"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            json.dump(result, f, indent=2)
+        os.replace(tmp_path, result_path)  # atomic on POSIX; near-atomic on Windows
+    except Exception:
+        os.unlink(tmp_path)  # clean up temp file on failure
+        raise
 
     print(f"[W{window} S{seed_idx}] Done. Model → {model_path.name}")
 
