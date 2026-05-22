@@ -15,6 +15,7 @@ This repository trains a Proximal Policy Optimization (PPO) agent to manage a co
 DRL-for-OPA/
 ├── config.py                   # Centralised hyperparameters & paths
 ├── requirements.txt
+├── run_etf.py                  # Standalone 4-ETF experiment (see below)
 └── src/
     ├── data/
     │   └── fetch_data.py       # Downloads ETF/VIX/SPX data; saves prices.csv
@@ -104,6 +105,70 @@ Loads the saved models, runs deterministic inference over the 10-year out-of-sam
 ```bash
 python src/evaluate.py
 ```
+
+---
+
+## 4-ETF experiment (`run_etf.py`)
+
+A self-contained script that applies the same PPO/DSR approach to the 4-ETF dataset used in:
+
+> **"Hopfield Networks for Asset Allocation"** — Nicolini et al. (2024)
+
+This allows a direct apples-to-apples comparison of DRL against the Hopfield Networks method on the same universe and time period.
+
+### Assets and period
+
+| Ticker | Description |
+|--------|-------------|
+| AGG | iShares Core U.S. Aggregate Bond ETF |
+| DBC | Invesco DB Commodity Index Tracking Fund |
+| VTI | Vanguard Total Stock Market ETF |
+| VIX | CBOE Volatility Index |
+
+Period: **2006-02-06 → 2023-12-29** (12 walk-forward windows, test years 2012–2023)
+
+### Key differences from the main pipeline
+
+| Setting | Main pipeline | ETF experiment |
+|---------|---------------|----------------|
+| Assets | 11 S&P 500 sector ETFs | 4 ETFs (AGG, DBC, VTI, VIX) |
+| Test period | 2012–2021 (10 windows) | 2012–2023 (12 windows) |
+| Seeds per window | 5 | 3 |
+| SubprocVecEnv workers | 10 | 4 |
+| Training mode | Parallel subprocesses | Sequential (single process) |
+| Baseline | MVO | None (DRL only) |
+| Vol proxy | S&P 500 (`^GSPC`) | VTI |
+| Output dir | `results/` | `results_etf/` |
+
+### Usage
+
+```bash
+# Full run (7.5M steps × 3 seeds × 12 windows — several hours)
+python run_etf.py
+
+# Quick sanity check (500k steps, 1 seed)
+python run_etf.py --quick
+
+# Skip training; re-evaluate saved models and regenerate plots
+python run_etf.py --eval-only
+```
+
+### Output
+
+```text
+results_etf/
+├── etf_cumulative_returns_RL.png   # Cumulative return curve
+└── etf_weights_RL.csv              # Daily portfolio weights per asset
+
+saved_models_etf/
+└── ppo_window_{w}_seed_{s}.zip     # Trained models (resume-safe: cached if exists)
+
+data_etf/
+├── prices.csv
+└── processed_features.csv
+```
+
+Cached models are reused automatically on re-runs, so training can be safely interrupted and resumed.
 
 ---
 
