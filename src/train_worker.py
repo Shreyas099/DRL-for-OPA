@@ -12,6 +12,7 @@ file so the parent orchestrator can collect results and pick the winner.
 
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -23,6 +24,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 from src.env.portfolio_env import PortfolioEnv
 from src.models.ppo_agent import PPOAgent
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 os.makedirs(config.MODELS_DIR, exist_ok=True)
 
@@ -83,14 +91,14 @@ def main():
     val_df   = df.loc[val_start:val_end]
 
     if len(train_df) == 0 or len(val_df) == 0:
-        print(f"[W{window} S{seed_idx}] Insufficient data — skipping.")
+        logger.warning("[W%d S%d] Insufficient data — skipping.", window, seed_idx)
         return
 
     # ------------------------------------------------------------------ #
     # Train                                                                #
     # ------------------------------------------------------------------ #
     actual_seed = seed_idx * 42
-    print(f"\n[W{window} S{seed_idx}] Training (seed={actual_seed}) for 7.5M timesteps ...")
+    logger.info("[W%d S%d] Training (seed=%d) for 7.5M timesteps ...", window, seed_idx, actual_seed)
 
     agent = PPOAgent(df=train_df, seed=actual_seed, prices_df=prices_df)
     agent.train(
@@ -103,7 +111,8 @@ def main():
     # ------------------------------------------------------------------ #
     val_env = PortfolioEnv(val_df, prices_df=prices_df)
     val_reward, val_ret = run_evaluation(val_env, agent)
-    print(f"[W{window} S{seed_idx}] Val Mean Reward: {val_reward:.6f}  |  Val Return: {val_ret:.2%}")
+    logger.info("[W%d S%d] Val Mean Reward: %.6f  |  Val Return: %.2f%%",
+                window, seed_idx, val_reward, val_ret * 100)
 
     # ------------------------------------------------------------------ #
     # Save model                                                           #
@@ -132,11 +141,12 @@ def main():
         with os.fdopen(tmp_fd, "w") as f:
             json.dump(result, f, indent=2)
         os.replace(tmp_path, result_path)  # atomic on POSIX; near-atomic on Windows
-    except Exception:
+    except Exception as exc:
+        logger.error("Failed to write result JSON: %s", exc)
         os.unlink(tmp_path)  # clean up temp file on failure
         raise
 
-    print(f"[W{window} S{seed_idx}] Done. Model → {model_path.name}")
+    logger.info("[W%d S%d] Done. Model → %s", window, seed_idx, model_path.name)
 
 
 if __name__ == "__main__":

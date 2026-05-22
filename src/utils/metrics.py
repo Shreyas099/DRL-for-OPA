@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import pyfolio as pf
 import empyrical as ep
 
 def calculate_metrics(returns, benchmark_returns=None):

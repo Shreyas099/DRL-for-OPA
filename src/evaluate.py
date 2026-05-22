@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -11,6 +12,13 @@ from stable_baselines3 import PPO
 from src.env.portfolio_env import PortfolioEnv
 from src.models.mvo_agent import MVOAgent
 from src.utils.metrics import calculate_metrics, print_metrics
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 os.makedirs(config.RESULTS_DIR, exist_ok=True)
 
@@ -63,10 +71,10 @@ def evaluate_pipeline():
     prices_path   = config.DATA_DIR / "prices.csv"
 
     if not features_path.exists():
-        print(f"ERROR: {features_path} not found. Run fetch_data.py first.")
+        logger.error("%s not found. Run fetch_data.py first.", features_path)
         return
     if not prices_path.exists():
-        print(f"ERROR: {prices_path} not found. Run fetch_data.py first.")
+        logger.error("%s not found. Run fetch_data.py first.", prices_path)
         return
 
     df        = pd.read_csv(features_path, index_col=0, parse_dates=True)
@@ -88,10 +96,10 @@ def evaluate_pipeline():
 
         test_df = df.loc[test_start:test_end]
 
-        print(f"\nWindow {window + 1} — test: {test_start} → {test_end}")
+        logger.info("Window %d — test: %s → %s", window + 1, test_start, test_end)
 
         if len(test_df) == 0:
-            print("  No test data, skipping.")
+            logger.warning("No test data for window %d, skipping.", window + 1)
             continue
 
         # --- DRL: run ALL seeds and average (paper Section 6) ---
@@ -99,15 +107,15 @@ def evaluate_pipeline():
         for seed in range(config.NUM_SEEDS):
             model_path = config.MODELS_DIR / f"ppo_window_{window}_seed_{seed}.zip"
             if not model_path.exists():
-                print(f"  WARNING: {model_path.name} not found, skipping seed.")
+                logger.warning("%s not found, skipping seed.", model_path.name)
                 continue
 
-            print(f"  Running seed {seed} ({model_path.name}) ...")
+            logger.info("  Running seed %d (%s) ...", seed, model_path.name)
             s = _run_drl_episode(test_df, model_path, prices_df=prices_df)
             seed_series.append(s)
 
         if not seed_series:
-            print("  WARNING: no saved models found for this window.")
+            logger.warning("No saved models found for window %d.", window + 1)
             continue
 
         # Align seeds on their common traded dates and average
@@ -132,10 +140,14 @@ def evaluate_pipeline():
     drl_series = pd.concat(drl_pieces).sort_index()
     mvo_series = pd.concat(mvo_pieces).sort_index()
 
-    print(f"\nDRL series: {len(drl_series)} trading days  "
-          f"({drl_series.index[0].date()} → {drl_series.index[-1].date()})")
-    print(f"MVO series: {len(mvo_series)} trading days  "
-          f"({mvo_series.index[0].date()} → {mvo_series.index[-1].date()})")
+    logger.info(
+        "DRL series: %d trading days  (%s → %s)",
+        len(drl_series), drl_series.index[0].date(), drl_series.index[-1].date(),
+    )
+    logger.info(
+        "MVO series: %d trading days  (%s → %s)",
+        len(mvo_series), mvo_series.index[0].date(), mvo_series.index[-1].date(),
+    )
 
     # ------------------------------------------------------------------ #
     # Metrics                                                              #
@@ -156,7 +168,7 @@ def evaluate_pipeline():
     _plot_cumulative(drl_series, mvo_series)
     _plot_annual(drl_series, mvo_series)
 
-    print(f"\nResults saved to {config.RESULTS_DIR}")
+    logger.info("Results saved to %s", config.RESULTS_DIR)
 
 
 def _plot_cumulative(drl: pd.Series, mvo: pd.Series):

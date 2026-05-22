@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 from pypfopt import risk_models, expected_returns
@@ -7,6 +8,8 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import config
+
+logger = logging.getLogger(__name__)
 
 
 class MVOAgent:
@@ -74,7 +77,8 @@ class MVOAgent:
             ef.max_sharpe(risk_free_rate=0.0)          # same objective as DRL
             cleaned = ef.clean_weights()
             return np.array([cleaned.get(a, 0.0) for a in self.assets])
-        except Exception:
+        except Exception as exc:
+            logger.warning("MVO optimisation failed (%s); falling back to equal weights.", exc)
             return np.ones(n) / n
 
     # -------------------------------------------------------------------- #
@@ -145,4 +149,3 @@ class MVOAgent:
             portfolio_value *= (1.0 + port_ret)
 
         return daily_returns, all_weights
-

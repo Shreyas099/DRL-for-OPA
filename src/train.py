@@ -22,6 +22,7 @@ Resource usage per window:
 """
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -29,6 +30,13 @@ from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 os.makedirs(config.MODELS_DIR, exist_ok=True)
 
@@ -44,10 +52,10 @@ def train_pipeline():
     prices_path = config.DATA_DIR / "prices.csv"
 
     if not data_path.exists():
-        print(f"ERROR: {data_path} not found. Run fetch_data.py first.")
+        logger.error("%s not found. Run fetch_data.py first.", data_path)
         return
     if not prices_path.exists():
-        print(f"ERROR: {prices_path} not found. Run fetch_data.py first.")
+        logger.error("%s not found. Run fetch_data.py first.", prices_path)
         return
 
     start_year      = int(config.START_DATE[:4])
@@ -58,11 +66,14 @@ def train_pipeline():
         train_end   = f"{start_year + window + config.WINDOW_TRAIN_YEARS - 1}-12-31"
         val_start   = f"{start_year + window + config.WINDOW_TRAIN_YEARS}-01-01"
 
-        print(f"\n{'='*60}")
-        print(f"Window {window + 1}/{config.NUM_WINDOWS}  "
-              f"[train {train_start[:4]}–{train_end[:4]}  |  val {val_start[:4]}]")
-        print(f"Launching {config.NUM_SEEDS} seeds in parallel ...")
-        print(f"{'='*60}")
+        logger.info("=" * 60)
+        logger.info(
+            "Window %d/%d  [train %s–%s  |  val %s]",
+            window + 1, config.NUM_WINDOWS,
+            train_start[:4], train_end[:4], val_start[:4],
+        )
+        logger.info("Launching %d seeds in parallel ...", config.NUM_SEEDS)
+        logger.info("=" * 60)
 
         # ---------------------------------------------------------------- #
         # Launch all seeds simultaneously as independent subprocesses       #
@@ -73,11 +84,11 @@ def train_pipeline():
         # spawn 500+ threads on 96 cores, killing performance.
         worker_env = os.environ.copy()
         worker_env.update({
-            "OMP_NUM_THREADS":     "1",
-            "MKL_NUM_THREADS":     "1",
-            "OPENBLAS_NUM_THREADS":"1",
+            "OMP_NUM_THREADS":        "1",
+            "MKL_NUM_THREADS":        "1",
+            "OPENBLAS_NUM_THREADS":   "1",
             "VECLIB_MAXIMUM_THREADS": "1",
-            "NUMEXPR_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS":    "1",
         })
 
         procs = []
@@ -93,16 +104,16 @@ def train_pipeline():
             # Inherit stdout/stderr so SB3 progress bars print to terminal
             proc = subprocess.Popen(cmd, env=worker_env)
             procs.append((seed, proc))
-            print(f"  [W{window} S{seed}] started (pid={proc.pid})")
+            logger.info("[W%d S%d] started (pid=%d)", window, seed, proc.pid)
 
         # ---------------------------------------------------------------- #
         # Wait for every seed to finish                                      #
         # ---------------------------------------------------------------- #
-        print(f"\nWaiting for all {config.NUM_SEEDS} seeds to complete ...")
+        logger.info("Waiting for all %d seeds to complete ...", config.NUM_SEEDS)
         for seed, proc in procs:
             proc.wait()
             status = "OK" if proc.returncode == 0 else f"ERROR (code {proc.returncode})"
-            print(f"  [W{window} S{seed}] finished — {status}")
+            logger.info("[W%d S%d] finished — %s", window, seed, status)
 
         # ---------------------------------------------------------------- #
         # Collect results and select best seed (paper §5.2)                 #
@@ -110,32 +121,38 @@ def train_pipeline():
         best_val_reward        = -float("inf")
         best_window_agent_path = None
 
-        print(f"\n  Results for window {window + 1}:")
+        logger.info("Results for window %d:", window + 1)
         for seed in range(config.NUM_SEEDS):
             result_path = config.MODELS_DIR / f"result_window_{window}_seed_{seed}.json"
             if not result_path.exists():
-                print(f"  [W{window} S{seed}] WARNING: no result file — skipping")
+                logger.warning("[W%d S%d] no result file — skipping", window, seed)
                 continue
             try:
                 with open(result_path) as f:
                     r = json.load(f)
             except (json.JSONDecodeError, ValueError) as exc:
-                print(f"  [W{window} S{seed}] WARNING: corrupt result file ({exc}) — skipping")
+                logger.warning("[W%d S%d] corrupt result file (%s) — skipping", window, seed, exc)
                 continue
-            print(f"    Seed {seed}: reward={r['val_reward']:+.6f}  return={r['val_return']:+.2%}")
+            logger.info(
+                "  Seed %d: reward=%+.6f  return=%+.2f%%",
+                seed, r["val_reward"], r["val_return"] * 100,
+            )
             if r["val_reward"] > best_val_reward:
                 best_val_reward        = r["val_reward"]
                 best_window_agent_path = Path(r["model_path"])
 
         if best_window_agent_path is None:
-            print(f"  WARNING: No valid seeds for window {window + 1}. Skipping warm-start.")
+            logger.warning("No valid seeds for window %d. Skipping warm-start.", window + 1)
         else:
-            print(f"\n  Best: {best_window_agent_path.name}  (reward={best_val_reward:+.6f})")
+            logger.info(
+                "Best: %s  (reward=%+.6f)",
+                best_window_agent_path.name, best_val_reward,
+            )
 
         # Warm-start next window from the best agent of this window
         best_agent_path = best_window_agent_path
 
-    print("\nTraining complete.")
+    logger.info("Training complete.")
 
 
 if __name__ == "__main__":

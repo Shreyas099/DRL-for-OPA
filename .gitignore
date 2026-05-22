@@ -1,6 +1,10 @@
 venv/
 __pycache__/
-data/
+/data/
 saved_models/
 results/
 *.log
+.DS_Store
+**/.DS_Store
+.claude/
+*.pdf

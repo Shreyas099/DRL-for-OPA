@@ -1,12 +1,20 @@
-import yfinance as yf
-import pandas as pd
+import logging
 import numpy as np
 import os
-from pathlib import Path
+import pandas as pd
 import sys
+import yfinance as yf
+from pathlib import Path
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import config
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 def fetch_data():
@@ -32,7 +40,7 @@ def fetch_data():
     """
     all_tickers = config.ASSETS + [config.MARKET_INDEX, config.VIX_INDEX]
 
-    print(f"Fetching data from {config.START_DATE} to {config.END_DATE}...")
+    logger.info("Fetching data from %s to %s ...", config.START_DATE, config.END_DATE)
     raw = yf.download(all_tickers, start=config.START_DATE, end=config.END_DATE)["Close"]
 
     # Forward-fill then back-fill for newer ETFs (e.g. XLRE listed 2015)
@@ -44,7 +52,7 @@ def fetch_data():
     prices_df = raw[config.ASSETS].copy()
     prices_path = config.DATA_DIR / "prices.csv"
     prices_df.to_csv(prices_path)
-    print(f"Raw prices saved to {prices_path}")
+    logger.info("Raw prices saved to %s", prices_path)
 
     # ------------------------------------------------------------------ #
     # 2. Daily log returns for every asset                                #
@@ -91,10 +99,10 @@ def fetch_data():
 
     output_path = config.DATA_DIR / "processed_features.csv"
     features_df.to_csv(output_path)
-    print(f"Processed features saved to {output_path}")
-    print(f"  Date range : {features_df.index[0].date()} → {features_df.index[-1].date()}")
-    print(f"  Rows       : {len(features_df)}")
-    print(f"  Columns    : {list(features_df.columns)}")
+    logger.info("Processed features saved to %s", output_path)
+    logger.info("  Date range : %s → %s", features_df.index[0].date(), features_df.index[-1].date())
+    logger.info("  Rows       : %d", len(features_df))
+    logger.info("  Columns    : %s", list(features_df.columns))
 
     return features_df
 

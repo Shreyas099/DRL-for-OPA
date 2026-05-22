@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -8,6 +9,8 @@ from stable_baselines3.common.utils import set_random_seed
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import config
 from src.env.portfolio_env import PortfolioEnv
+
+logger = logging.getLogger(__name__)
 
 
 def make_env(df, seed: int, rank: int, prices_df=None):
@@ -84,10 +87,10 @@ class PPOAgent:
                          for the next group of 5 agents."
         """
         if seed_model_path and os.path.exists(str(seed_model_path)):
-            print(f"  Warm-starting from {seed_model_path}")
+            logger.info("Warm-starting from %s", seed_model_path)
             self.model.set_parameters(str(seed_model_path))
 
-        print(f"  Training PPO (seed={self.seed}) for {total_timesteps:,} timesteps ...")
+        logger.info("Training PPO (seed=%d) for %d timesteps ...", self.seed, total_timesteps)
         self.model.learn(total_timesteps=total_timesteps)
 
     def save(self, path):
@@ -99,4 +102,3 @@ class PPOAgent:
     def predict(self, state, deterministic: bool = True):
         action, _ = self.model.predict(state, deterministic=deterministic)
         return action
-
