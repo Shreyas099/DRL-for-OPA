@@ -6,6 +6,6 @@ stable-baselines3[extra]==2.4.1
 PyPortfolioOpt==1.6.0
 pyfolio-reloaded==0.9.9
 empyrical-reloaded==0.5.12
-matplotlib==3.9.4
+matplotlib>=3.7
 seaborn==0.13.2
-scipy==1.13.1
+scipy>=1.13.1
