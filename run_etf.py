@@ -183,11 +183,13 @@ def train_pipeline(
         print(f"Window {window+1}/{NUM_WINDOWS}  "
               f"[train {train_start[:4]}–{train_end[:4]} | val {val_start[:4]}]")
 
-        best_val, best_seed_path = -np.inf, None
+        best_val,       best_seed_path  = -np.inf, None  # best overall (for display)
+        best_fresh_val, best_fresh_path = -np.inf, None  # best trained THIS run (for warm-start)
 
         for seed_idx in range(num_seeds):
-            actual_seed = seed_idx * 42
-            model_path  = MODELS_DIR / f"ppo_window_{window}_seed_{seed_idx}.zip"
+            actual_seed  = seed_idx * 42
+            model_path   = MODELS_DIR / f"ppo_window_{window}_seed_{seed_idx}.zip"
+            trained_now  = False
 
             if model_path.exists():
                 print(f"  Seed {seed_idx}: cached model found — skipping training.")
@@ -201,6 +203,7 @@ def train_pipeline(
                 agent.save(model_path)
                 agent.envs.close()
                 print(f"  Seed {seed_idx}: model saved → {model_path.name}")
+                trained_now = True
 
             val_reward, val_ret = _quick_eval(str(model_path), val_df, prices_df)
             print(f"  Seed {seed_idx}: val_reward={val_reward:+.6f}  val_return={val_ret:+.2%}")
@@ -209,8 +212,20 @@ def train_pipeline(
                 best_val       = val_reward
                 best_seed_path = model_path
 
-        best_model_path = best_seed_path
-        print(f"  Best: {best_seed_path.name}  (reward={best_val:+.6f})")
+            # Only models trained in this run are eligible as warm-start for the next window.
+            # Cached models may have been trained with fewer timesteps (e.g. --quick) and
+            # warm-starting from them causes KL/value-loss instability in full runs.
+            if trained_now and val_reward > best_fresh_val:
+                best_fresh_val  = val_reward
+                best_fresh_path = model_path
+
+        # Use freshly-trained best for warm-start; fall back to None if all were cached.
+        best_model_path = best_fresh_path
+        print(f"  Best (overall):    {best_seed_path.name}  (reward={best_val:+.6f})")
+        if best_fresh_path:
+            print(f"  Best (warm-start): {best_fresh_path.name}  (reward={best_fresh_val:+.6f})")
+        else:
+            print(f"  Best (warm-start): none — all seeds cached, next window starts fresh.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
