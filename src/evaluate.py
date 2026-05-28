@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 
+import matplotlib
+matplotlib.use("Agg")  # headless — must be set before importing pyplot
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
